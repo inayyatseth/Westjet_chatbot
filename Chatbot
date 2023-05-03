@@ -1,0 +1,602 @@
+
+import json
+import requests
+import pandas as pd
+import sqlite3
+
+# API endpoints and key
+routes_url = 'https://airlabs.co/api/v9/routes?'
+airports_url = 'https://airlabs.co/api/v9/airports?&api_key=0468e39c-4757-443a-9a7c-7a387d5ab0ee'
+airports_schedule_url = 'https://airlabs.co/api/v9/schedules?'
+api_key = '0468e39c-4757-443a-9a7c-7a387d5ab0ee'
+icao_code = 'WJA'
+# Define parameters for the API calls
+
+params = {
+    'api_key': api_key,
+    'airline_icao': icao_code # Iata code for WestJet
+}
+
+# Make a request to the routes API endpoint
+
+routes_response = requests.get(routes_url, params=params)
+routes_dat = json.loads(routes_response.text)
+routes_data = routes_dat['response']
+
+# Create a DataFrame from the routes data and drop columns we don't need
+
+df_routes = pd.DataFrame(routes_data)
+columns_to_drop = ['cs_flight_number', 'aircraft_icao', 'arr_time_utc', 'arr_icao', 'dep_time_utc', 'dep_terminals', 'dep_icao', 'cs_flight_iata', 'cs_flight_iata', 'cs_airline_iata', 'flight_icao', 'airline_icao']
+df_routes = df_routes.drop(columns=columns_to_drop)
+
+# Load airport data from a CSV file and drop unused columns
+# We used Kaggale as a datasource for all airports and there codes
+
+airports = pd.read_csv("/Users/inayyatseth/airports_data_insy.csv")
+df_airports = airports.drop(columns=['ICAO', 'Latitude', 'Longitude'])
+df_airports = df_airports.dropna()
+
+# Make a request to the schedules API endpoint
+
+schedules_response = requests.get(airports_schedule_url, params=params)
+schedules_data = json.loads(schedules_response.text)
+schedules_data = schedules_data['response']
+
+# Create a DataFrame from the schedules data and drop columns we don't need
+
+df_schedules = pd.DataFrame(schedules_data)
+columns_to_drop = ['airline_icao', 'flight_icao', 'airline_iata', 'dep_icao', 'dep_terminal', 'dep_time_utc', 'dep_actual', 'dep_actual_utc', 'arr_icao', 'arr_terminal', 'arr_baggage', 'arr_gate', 'arr_time_utc', 'arr_estimated_utc', 'cs_airline_iata', 'cs_flight_number', 'cs_flight_iata', 'delayed', 'aircraft_icao', 'arr_time_ts', 'dep_time_ts', 'arr_estimated_ts', 'dep_estimated_ts', 'dep_actual_ts']
+df_schedules = df_schedules.drop(columns=columns_to_drop)
+
+# Get a list of unique airport IATA codes from df_routes
+
+airport_iata_list = df_routes['dep_iata'].unique().tolist() + df_routes['arr_iata'].unique().tolist()
+
+# Filter df_airports to only include rows with airport IATA codes in the list 
+# The list only contains Airport Codes Westjet flies to
+
+df_airports = df_airports[df_airports['IATA'].isin(airport_iata_list)]
+
+# Create the dictionary for WestJet baggage information
+
+data = {'Baggage_Type': ['Carry-on', 'Personal Item', 'Checked Baggage'],
+        'Number_of_Bags': [1, 1, 2],
+        'Max_Weight_per_bag': ['10 kg (22 lb)', 'n/a', '23 kg (50 lb)'],
+        'Max_Size_per_bag': ['53 x 23 x 38 cm (21 x 9 x 15 in)', '41 x 15 x 33 cm (16 x 6 x 13 in)', '157 cm (62 in) total linear dimensions'],
+        'Additional_Fees': ['n/a', 'n/a', 'subject to applicable oversized weight and size restrictions and fees'],
+        'Recommended_Check-in Time': ['n/a', 'n/a', '2 hours prior to departure']
+       }
+
+# Create a dataframe based on the baggage information
+
+df_westjet_baggage = pd.DataFrame(data)
+
+
+
+# Define first function for scenario 1
+# This function will get the arrival and departure airport iata from a customer
+
+def get_iata_from_user_input(df_airports, prompt):
+    
+    # Loop until valid input is received or user quits
+    
+    while True:
+        
+        # Get user input
+        user_input = input(prompt)
+        
+        # Find airports that match the user's input city
+        matching_airports = df_airports.loc[df_airports['City'].str.capitalize() == user_input.capitalize(), 'IATA'].tolist()
+        
+        # If there is only one match, return the IATA code
+        if len(matching_airports) == 1:
+            return matching_airports[0]
+        
+        # If there are multiple matches, ask for the country and narrow down the search
+        elif len(matching_airports) > 1:
+            print()
+            print(f"Romeo: Multiple airports match '{user_input}'. Please specify the country.")
+            print()
+            
+            # Get user input for the country
+            user_input_country = input('You: ')
+            
+            # Find airports that match both the city and country
+            matching_airports = df_airports.loc[(df_airports['City'].str.lower() == user_input.lower()) & (df_airports['Country'].str.lower() == user_input_country.lower()), 'IATA'].tolist()
+            
+            # If there is only one match, return the IATA code
+            if len(matching_airports) == 1:
+                return matching_airports[0]
+            
+            # If there are still multiple matches, ask the user to choose one
+            elif len(matching_airports) > 1:
+                print()
+                print(f"Romeo: There are still multiple matching airports for '{user_input}, {user_input_country}'. Please choose one of the following IATA codes:")
+                print()
+                
+                # Print the list of matching IATA codes
+                for iata in matching_airports:
+                    print(iata)
+                
+                # Loop until valid input is received or user quits
+                while True: 
+                    user_input_iata = input('You: ')
+                    print()
+                    
+                    # If the user enters a valid IATA code, return it
+                    if user_input_iata.upper() in matching_airports:
+                        return user_input_iata.upper()
+                    
+                    # If the user wants to quit, return None
+                    elif user_input_iata.lower() == 'quit':
+                        return None
+                    
+                    # Otherwise, ask the user to enter a valid IATA code
+                    else:
+                        print("Romeo: Sorry, please enter a valid IATA code.")
+                        print()
+            
+            # If there are no matches, ask the user to try again
+            else:
+                print("Romeo: Sorry, no matching airport found. Please try again.")
+                print()
+                print("Romeo: Please enter the city you want to fly to?: ")
+        
+        # If the user wants to quit, return None
+        elif user_input.lower() == 'quit':
+            return None
+        
+        # Otherwise, ask the user to enter a valid city name
+        else:
+            print("Romeo: Sorry, please enter a valid city name.")
+
+
+# Define function to find the flight iata that the user wants to take
+
+def get_flight_iata_from_user_input(routes):
+    while True:
+        # Prompt user for input
+        flight_input = input('You: ')
+        
+        # Check if the input matches a flight IATA code in the given routes dataframe
+        if flight_input.upper() in routes['flight_iata'].str.upper().tolist():
+            return flight_input.upper() # Return the validated input
+            
+        # If user enters 'quit', return None to exit the loop
+        elif user_input.lower() == 'quit':
+            return None
+        
+        # If input doesn't match any valid IATA codes, prompt user to enter a valid code
+        else:
+            print("Sorry, please enter a valid flight IATA code.")
+            
+
+# Define function to find the day the user wants to take the flight on
+
+def get_day_from_user_input(routes, flight_input, to_city, from_city):
+    # Get rows of the given flight IATA code
+    flight_rows = routes.loc[routes['flight_iata'] == flight_input]
+    
+    # Check if there are any available flights
+    if not flight_rows.empty:
+        while True:
+            # Prompt user to input a day of the week
+            print("Romeo: Which day would you like to travel? ")
+            print()
+            user_day_real = input('You: ')
+            
+            # Check if user wants to quit
+            if user_day_real.lower() == 'quit':
+                return None
+            
+            # Extract the first 3 letters of the user's day input (e.g. Mon)
+            user_day = user_day_real.lower()[0:3]
+            print()
+            
+            # Filter available flights to the user's chosen day
+            available_flights = flight_rows.loc[flight_rows['days'].apply(lambda x: user_day in x)]
+            
+            # If no flights found for the chosen day, prompt user to try again
+            if available_flights.empty:
+                print(f"Sorry, no flights were found with the number {flight_input} on {user_day}. Please try again.")
+            
+            # If flights found, show flight details to user, prompt for email, and return
+            else:
+                print("Romeo: This is your selected flight:")
+                print()
+                for _, row in available_flights.iterrows():
+                    print(f"Flight IATA: {row['flight_iata']}")
+                    print("Days:", user_day_real)
+                    print(f"Departure time: {row['dep_time']}")
+                    print(f"Arrival time: {row['arr_time']}")
+                    print("Arrival destination:", to_city)
+                    print("Departure destination:", from_city)
+                    print()
+                    print('Romeo: Please leave your email with me and I will send you a confirmation shortly')
+                    print()
+                    user_input = input('You: ')
+                    if user_input.lower() ==  'quit':
+                        return
+                    print()
+                    print('Thank you! Have a nice day')
+                    return
+    else:
+        # If no flights found for the given flight IATA code, prompt user to try again
+        print(f"Sorry, no flights were found with the number {flight_input}. Please try again.")
+        return None
+
+
+# The main function for the first option
+# Takes user input of where to fly from and to and gives them a flight confirmation
+
+def option1(df_airports, df_routes):
+    while True:
+        # Prompt user for destination airport IATA code
+        print('Romeo: Where do you want to fly to?')
+        print()
+        to_city = get_iata_from_user_input(df_airports, 'You: ')
+        if to_city == None:
+            return
+
+        # Prompt user for departure airport IATA code
+        print('Romeo: Great! Where are you flying from:')
+        print()
+        from_city = get_iata_from_user_input(df_airports, 'You: ')
+        if from_city == None:
+            return
+
+        # Find routes from the selected airports
+        to_IATA = to_city
+        from_IATA = from_city
+        routes = df_routes.loc[(df_routes['arr_iata'] == to_IATA) & (df_routes['dep_iata'] == from_IATA)]
+
+        if len(routes) == 0:
+            # If no routes are found, notify the user and prompt for input again
+            print()
+            print("Sorry, there are no flights available between", from_city.title(), "and", to_city.title())
+            print()
+            continue
+        else:
+            # If routes are found, display them to the user
+            print("Here are the available flights between", from_city.title(), "and", to_city.title())
+            print()
+            print(routes[['flight_iata','days', 'dep_time', 'arr_time']])
+
+            # Prompt user for flight and day inputs
+            print()
+            print('Romeo: Which flight do you want to take? Please enter the flight IATA code.')
+            flight_input = get_flight_iata_from_user_input(routes)
+            if flight_input == None:
+                return
+
+            print()
+            day_input = get_day_from_user_input(routes, flight_input, to_city, from_city)
+            if day_input == None:
+                return
+
+            # End the function and return control to the calling code
+            return
+
+
+
+
+def option2(df_schedules, df_airports):
+    print('RomeoPerfect! What is the flight number you are trying to find the schedule for?')
+    while True:
+        print()
+        user_input = input('You: ')
+        
+        if user_input.lower() == 'quit':
+            return
+        
+        # Filter the df_schedules DataFrame based on user input
+        schedule = df_schedules.loc[df_schedules['flight_number'] == user_input]
+
+        # Check if there is any match in the schedule
+        if schedule.empty:
+            print()
+            print(f"Sorry, there are no schedules found for flight number {user_input}")
+        else:
+            # Get the flight informatxion from the schedule
+            arr_estimated, dep_time, duration, dep_delayed, arr_delayed, dep_iata, arr_iata, status = \
+                schedule[['arr_estimated', 'dep_time', 'duration', 'dep_delayed', 'arr_delayed', 'dep_iata', 'arr_iata', 'status']].iloc[0]
+
+            # Look up the airport information in the df_airports DataFrame
+            dep_city = df_airports.loc[df_airports['IATA'] == dep_iata, 'City'].values[0]
+            arr_city = df_airports.loc[df_airports['IATA'] == arr_iata, 'City'].values[0]
+
+            # Print the flight information to the user
+            print()
+            print(f"Flight number: {user_input}")
+            print(f"Departure city: {dep_city}")
+            print(f"Arrival city: {arr_city}")
+            print(f"Arrival estimated time: {arr_estimated}")
+            print(f"Departure time: {dep_time}")
+            print(f"Duration: {duration} minutes")
+            print(f"Departure delayed: {dep_delayed} minutes")
+            print(f"Arrival delayed: {arr_delayed} minutes")
+            print(f"Flight status: {status}")
+            return
+
+
+
+def option3(df_westjet_baggage):
+    # Ask the user what size of baggage they have questions about
+    print('Romeo: Okay! What size baggage do you have questions about?')
+    print('1) Checked-in bag')
+    print('2) Carry-on bag')
+    print('3) Personal item')
+    choice = input('You: ')
+    print()
+    
+    if choice == '1':   # If the user chose checked-in bag
+        # Display information on checked-in baggage
+        print('Romeo: Here is information on checked-in baggage:')
+        checked_baggage = df_westjet_baggage.loc[df_westjet_baggage['Baggage_Type'] == 'Checked Baggage']
+        print('Maximum weight per bag:', checked_baggage['Max_Weight_per_bag'].values[0], 'lbs')
+        print('Maximum size per bag:', checked_baggage['Max_Size_per_bag'].values[0])
+        print()
+
+        # Ask the user how many checked-in bags they are planning to carry
+        print('Romeo: How many checked-in bags are you planning to carry? ')
+        print()
+        num_bags = int(input('You: '))
+        if num_bags > (checked_baggage['Number_of_Bags']).values[0]:   # If the user is carrying more bags than the limit
+            # Advise the user to talk to a WestJet associate for excess baggage permission and leave their email address
+            print('Romeo: You are over the amount limit for checked-in baggage. Please talk to a WestJet associate about excess baggage permission and leave your email address for us to contact you.')
+            print()
+            user_input = input('You: ')
+            if user_input.lower() ==  'quit':   # If the user wants to quit
+                return
+            print()
+            print('Thank you! Have a nice day')
+            return   # End the function
+        else:
+            # Advise the user that they are within the limit for checked-in baggage
+            print()
+            print('Romeo: You are within the amount limit for checked-in baggage, Thank you')
+    elif choice == '2':   # If the user chose carry-on bag
+        # Display information on carry-on baggage
+        print('Romeo: Here is information on carry-on baggage:')
+        carry_on_baggage = df_westjet_baggage.loc[df_westjet_baggage['Baggage Type'] == 'Carry-on']
+        print('Maximum weight per bag:', carry_on_baggage['Max_Weight_per_bag'].values[0], 'lbs')
+        print('Maximum size per bag:', carry_on_baggage['Max_Size_per_bag'].values[0])
+        print()
+
+        # Ask the user how many carry-on bags they are planning to carry
+        print('Romeo: How many carry-on bags are you planning to carry? ')
+        print()
+        num_bags = int(input('You: '))
+        if num_bags > 1:   # If the user is carrying more bags than the limit
+            # Advise the user to talk to a WestJet associate for excess baggage permission and leave their email address
+            print('Romeo: You are over the amount limit for carry-on baggage. Please talk to a WestJet associate about excess baggage permission and leave your email address for us to contact you.')
+            user_input = input('You: ')
+            if user_input.lower() ==  'quit':   # If the user wants to quit
+                return
+            print()
+            print('Thank you! Have a nice day')
+            return   # End the function
+        else:
+            # Advise the user that they are within the limit for carry-on baggage
+            print('Romeo: You are within the amount limit for checked-in baggage, Thank you')
+    elif choice == '3':
+        # Provide information on personal items
+        print('Romeo: Here is information on personal item:')
+        print()
+        personal_item = df_westjet_baggage.loc[df_westjet_baggage['Baggage Type'] == 'Personal Item']
+        print('Maximum weight per item:', personal_item['Max_Weight_per_bag'].values[0], 'lbs')
+        print('Maximum size per item:', personal_item['Max_Size_per_bag'].values[0])
+        print()
+        
+        # Ask the user how many personal items are they planning on carrying        
+        print('Romeo: How many personal items are you planning to carry?')
+        print()
+        num_items = int(input('You: '))
+        if num_items > 1:
+            # Advise the user to talk to a WestJet associate about being over baggage limit
+            print('Romeo: You are over the amount limit for personal items. Please talk to a WestJet associate about excess baggage permission and leave your email address for us to contact you.')
+            user_input = input('You: ')
+            if user_input.lower() ==  'quit':
+                return
+            print()
+            print('Thank you! Have a nice day')
+            # End
+            return
+        else:
+            print()
+            print('Romeo: You are within the amount limit for checked-in baggage, Thank you')
+    elif choice.lower() == 'quit':
+        return
+    else:
+        print('Romeo: Sorry, I did not understand your choice. Please enter 1, 2, or 3.')
+
+    return
+
+def option4(df_schedules, df_airports):
+    # Find all flights that are currently scheduled
+    active_flights = df_schedules[df_schedules['status'] == 'scheduled']
+
+    # Ask for the flight number until a valid one is provided or the user quits
+    while True:
+        print('Romeo: What is your flight number?')
+        print()
+        flight_num = input('You: ')
+        print()
+        if flight_num.lower() == 'quit':
+            return
+        elif flight_num.upper() not in active_flights['flight_number'].tolist():
+            print('Romeo: Sorry, that flight number is not valid. Please try again.')
+        else:
+            break
+
+    # Find departure and arrival airports based on the flight number
+    dep_iata = active_flights.loc[active_flights['flight_number'] == flight_num, 'dep_iata'].iloc[0]
+    arr_iata = active_flights.loc[active_flights['flight_number'] == flight_num, 'arr_iata'].iloc[0]
+
+    # Find city names for departure and arrival airports
+    dep_city = df_airports[df_airports['IATA'] == dep_iata]['City'].values[0]
+    arr_city = df_airports[df_airports['IATA'] == arr_iata]['City'].values[0]
+
+    # Find the departure gate and time for the given flight number
+    dep_gate = active_flights.loc[active_flights['flight_number'] == flight_num, 'dep_gate'].iloc[0]
+    dep_time = active_flights.loc[active_flights['flight_number'] == flight_num, 'dep_estimated'].iloc[0]
+
+    # Ask for the reference code and exit if the user quits
+    print('Romeo: What is your reference code? (Last name and the last 4 digits of your phone number)')
+    print()
+    reference_num = input('You: ')
+    print()
+    if reference_num.lower() == 'quit':
+        return
+
+    # Ask for the user's email and exit if the user quits
+    print(f'Romeo: Thank you for checking in for Flight {flight_num.upper()}!')
+    print(f'You will be flying from {dep_city} to {arr_city}.')
+    print(f'Your flight departs at {dep_time} from gate {dep_gate}')
+    print()
+    print('Romeo: What is your email address? I will email your boarding pass to you shortly.')
+    print()
+    user_input = input('You: ')
+    if user_input.lower() == 'quit':
+        return
+
+    # Exit the function and thank the user
+    print()
+    print('Thank you! Have a nice day.')
+    print()
+    return
+
+
+
+db_path = 'WestJet_Claims_Database.db'
+
+def option5(df_routes, db_path):
+    # Create connection to database
+    conn = sqlite3.connect(db_path)
+    
+    # Check if table already exists, if not create it
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='claims';")
+    table_exists = cur.fetchone()
+    if table_exists:
+        print()
+    else:
+        conn.execute('''CREATE TABLE claims
+                        (ClaimNumber INTEGER PRIMARY KEY,
+                        FlightNumber TEXT NOT NULL,
+                        FlightDate TEXT NOT NULL,
+                        PassengerName TEXT NOT NULL,
+                        PassengerEmail TEXT NOT NULL, 
+                        Issue TEXT NOT NULL,
+                        Status TEXT NOT NULL,
+                        ClaimAmount REAL);''')
+    
+    # Prompt user for new claim details and add to claims table
+    while True:
+        print('Romeo: Okay! Let\'s get started on the claim process: ')
+        print()
+        print('Romeo: Please enter your full name: ')
+        full_name = input('You: ')
+        if full_name.lower() == 'quit':
+            break
+        print()
+        print('Romeo: Please enter your flight number: ')
+        flight_number = input('You: ')
+        if flight_number.lower() == 'quit':
+            break
+        
+        # Check if flight number is valid in df_routes
+        if flight_number not in df_routes['flight_number'].tolist():
+            print('Romeo: That is not a valid flight number, please enter a new number')
+            continue
+        
+        print()
+        print('Romeo: Please enter your flight date (YYYY-MM-DD)')
+        date = input('You: ')
+        if date.lower() == 'quit':
+            break
+        print()
+        print('Romeo: Please describe your issue: ')
+        issue = input('You: ')
+        if issue.lower() == 'quit':
+            break     
+        print()
+        print('Romeo: Please enter your email. Our claims team will review your claim and get back to you within 7 business days')
+        print()
+        PassengerEmail = input('You: ')
+
+        # Generate new claim number
+        cur = conn.cursor()
+        cur.execute("SELECT MAX(ClaimNumber) FROM claims")
+        result = cur.fetchone()[0]
+        new_claim_number = result + 1 if result is not None else 10001
+        
+        # Insert new claim into table
+        cur.execute("INSERT INTO claims (ClaimNumber, FlightNumber, FlightDate, PassengerName, PassengerEmail, Issue, Status, ClaimAmount) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", 
+                    (new_claim_number, flight_number, date, full_name, PassengerEmail, issue, 'Pending', None))
+        conn.commit()
+        
+        print()
+        print('Romeo: Your claim has been submitted. Thank you for using our service!')
+        
+        break
+
+    # Close connection to database
+    conn.close()
+    return
+
+
+          
+# Welcome message and options
+print()
+print('Romeo: Welcome to WestJet, please select one of the following options -- type "quit" at any point to exit our chat')
+print()
+print('1) -- Help booking a flight -- ')
+print()
+print('2) -- Check flight schedules for today -- ')
+print()
+print('3) -- Baggage Policy -- ')
+print()
+print('4) -- Online Check-in -- ')
+print()
+print('5) -- File a claim -- ')
+print()
+
+# Loop for user input
+while True:
+    user_input = input('You: ')
+    
+    # Option 1 - Help booking a flight
+    if user_input.lower() == 'help booking a flight' or user_input.lower() == '1':
+        print()
+        print('Romeo: Great! Let\'s get started with booking your flight.')
+        print()
+        option1(df_airports, df_routes)
+        break
+    
+    # Option 2 - Check flight schedules for today
+    elif user_input.lower() == 'check flight schedules for today' or user_input.lower() == '2':
+        print()
+        option2(df_schedules, df_airports)
+        break
+    
+    # Option 3 - Baggage Policy
+    elif user_input.lower() == 'baggage policy' or user_input.lower() == '3':
+        print()
+        option3(df_westjet_baggage)
+        break
+    
+    # Option 4 - Online Check-in
+    elif user_input.lower() == 'online check-in' or user_input.lower() == '4':
+        print()
+        option4(df_schedules, df_airports)
+        break
+    
+    # Option 5 - File a claim
+    elif user_input.lower() == 'file a claim' or user_input.lower() == '5':
+        option5(df_routes, db_path)
+        break
+    
+    # Invalid input
+    else:
+        print('Romeo: Sorry, I didn\'t understand. Please try again.')
